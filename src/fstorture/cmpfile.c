@@ -23,8 +23,6 @@
 #include "util.h"
 
 extern int trace;
-char *acl_perm_t_file_n[] = { "read", "write", "execute", "delete", "append", "readattr", "writeattr", "readextattr", "writeextattr", "readsecurity", "writesecurity", "chown" };
-int acl_perm_t_file_r[] = { ACL_READ_DATA, ACL_WRITE_DATA, ACL_EXECUTE, ACL_DELETE, ACL_APPEND_DATA, ACL_READ_ATTRIBUTES, ACL_WRITE_ATTRIBUTES, ACL_READ_EXTATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_READ_SECURITY, ACL_WRITE_SECURITY, ACL_CHANGE_OWNER };
 extern uuid_t *uuid;
 extern pthread_t thr[THREADS];
 extern pthread_mutex_t mutex_start;
@@ -148,8 +146,6 @@ btbool	cmpfileOpen(cmpfile_t *cmpfile, btbool writable, btbool nocache)
 		return 0;
 	}
 
-	if (nocache) 
-		fcntl(cmpfile->fd, F_NOCACHE, 1);
 	cmpfile->isOpen = 1;
 	return 1;
 }
@@ -301,124 +297,8 @@ btbool  cmpfileAcls(cmpfile_t *cmpfile)
 }
 btbool  cmpfileAcls_do()
 {                               // don't forget: sudo /usr/sbin/fsaclctl -p / -e
-	acl_t   acl;
-	acl_entry_t ace;
-	acl_permset_t perms;
-
-	if (trace) 
-		printf("%p: acl'ing file %s\n", pthread_self(), filename_shared);
-
-	if (NULL == (acl = acl_init(32))) { 
-		perr(errno, "acl_init()"); 
-		return 0;
-	}
-
-	if (0 != acl_create_entry(&acl, &ace)) {
-		perr(errno, "acl_create_entry()");
-		return 0;
-	}
-
-	/* allow or deny */
-	if (0 != acl_set_tag_type(ace, (random_int(2) == 1) ? ACL_EXTENDED_ALLOW : ACL_EXTENDED_DENY)) {
-		perr(errno, "acl_set_tag_type()");
-		return 0;
-	}
-
-	/* associate this with our uuid */
-	if (0 != acl_set_qualifier(ace, uuid)) {
-		perr(errno, "acl_set_qualifier()");
-		return 0;
-	}
-
-	if (0 != acl_get_permset(ace, &perms)) {
-		perr(errno, "acl_get_permset()");
-		return 0;
-	}
-
-	switch(random_int(3)) {
-		case 0: /* ADD */
-			if (0 != acl_add_perm(perms, acl_perm_t_file_r[random_int(12)])) {
-				perr(errno, "acl_add_perm()"); 
-				return 0;
-			}
-			break;
-		case 1: /* DELETE */
-			if (0 != acl_delete_perm(perms, acl_perm_t_file_r[random_int(12)])) {
-				perr(errno, "acl_delete_perms()");
-				return 0;
-			}
-			break;
-		case 2: /* CLEAR */
-			if (0 != acl_clear_perms(perms)) {
-				perr(errno, "acl_clear_perms()");
-				return 0;
-			}
-			break;
-	}
-
-	if (0 != acl_set_permset(ace, perms)) { 
-		perr(errno, "acl_set_permset()");
-		return 0;
-	}
-
-	if (filename_shared[0] != '\0') {
-		if (0 != acl_set_file(filename_shared, ACL_TYPE_EXTENDED, acl)) {
-			perr(errno, "acl_set_file()");
-			printf("f:%s\n", filename_shared);
-			return 0;
-		}
-	}
-
-	acl_free(acl);
-
 	return 1;
 }
-
-
-
-// This is unused and was the first quick attempt
-int cmpfileAcls2(cmpfile_t *cmpfile)
-{				// don't forget: sudo /usr/sbin/fsaclctl -p / -e
-	char dothis[100];
-	sprintf(dothis, "www");
-
-	switch(random_int(3)) {
-		case 0: /* ADD */
-			sprintf(dothis, "%s %s %s", dothis, 
-					(random_int(2) == 1) ? "allow" : "deny", 
-					acl_perm_t_file_n[random_int(12)]);
-
-			strcpy(cmpfile->acl, dothis);
-			sprintf(dothis, "exec chmod +a \"%s\" %s", cmpfile->acl, cmpfile->name);
-			break;
-
-		case 1: /* REMOVE */
-			if (cmpfile->acl[0] != '\0') {
-				sprintf(dothis, "exec chmod -a \"%s\" %s", cmpfile->acl, cmpfile->name);
-				cmpfile->acl[0] = '\0';
-			} else { dothis[0] = '\0'; }
-			break;
-
-		case 2: /* CHANGE */
-			if (cmpfile->acl[0] != 'z') {
-				sprintf(dothis, "%s %s %s", dothis, 
-						(random_int(2) == 1) ? "allow" : "deny", 
-						acl_perm_t_file_n[random_int(12)]);
-				strcpy(cmpfile->acl, dothis);
-				sprintf(dothis, "exec chmod =a# 0 \"%s\" %s", cmpfile->acl, cmpfile->name);
-			} else { dothis[0] = '\0'; }
-			break;
-	}
-
-	if (dothis[0] != '\0') {
-		//		printf("dothis=%s\n", dothis);
-		system(dothis);
-	}
-
-	return 1;
-}
-
-/* ------------------------------------------------------------------------- */
 
 btbool	cmpfileStat(cmpfile_t *cmpfile, int noPerms)
 {

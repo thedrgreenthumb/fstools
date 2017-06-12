@@ -35,12 +35,6 @@ value is 1 on success, 0 on failure.
 
 #define THREADS 5
 
-//char *acl_perm_t_file_n[] = { "read", "write", "execute", "delete", "append", "readattr", "writeattr", "readextattr", "writeextattr", "readsecurity", "writesecurity", "chown" };
-//int acl_perm_t_file_r[] = { ACL_READ_DATA, ACL_WRITE_DATA, ACL_EXECUTE, ACL_DELETE, ACL_APPEND_DATA, ACL_READ_ATTRIBUTES, ACL_WRITE_ATTRIBUTES, ACL_READ_EXTATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_READ_SECURITY, ACL_WRITE_SECURITY, ACL_CHANGE_OWNER };
-
-//int acl_perm_t_ALL[] = { ACL_READ_DATA, ACL_LIST_DIRECTORY, ACL_WRITE_DATA, ACL_ADD_FILE, ACL_EXECUTE, ACL_SEARCH, ACL_DELETE, ACL_APPEND_DATA, ACL_ADD_SUBDIRECTORY, ACL_DELETE_CHILD, ACL_READ_ATTRIBUTES, ACL_WRITE_ATTRIBUTES, ACL_READ_EXTATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_READ_SECURITY, ACL_WRITE_SECURITY, ACL_CHANGE_OWNER };
-
-
 typedef struct cmpfile{
 	struct file	*refFile;
 	int			fd;

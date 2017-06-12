@@ -1,23 +1,22 @@
 /*
- * Copyright (c) 1998-2009 Apple Inc. All rights reserved.
+ * Copyright (c) 1998-2001 Apple Computer, Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
- * 
- * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ *
+ * The contents of this file constitute Original Code as defined in and
+ * are subject to the Apple Public Source License Version 2.0 (the
+ * "License").  You may not use this file except in compliance with the
+ * License.  Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this file.
+ *
+ * This Original Code and all software distributed under the License are
+ * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
- * 
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License.
+ *
  * @APPLE_LICENSE_HEADER_END@
  *
  *	File:	fsx.c
@@ -25,7 +24,7 @@
  *
  *	File system exerciser. 
  *
- *	Rewrite and enhancements 1998-2003 Conrad Minshall -- conrad@mac.com
+ *	Rewrite and enhancements 1998-2001 Conrad Minshall -- conrad@mac.com
  *
  *	Various features from Joe Sokol, Pat Dirks, and Clark Warner.
  *
@@ -35,32 +34,24 @@
  *
  *	Checks for mmap last-page zero fill.
  *
- *	Oct 2006: Now includes Wenguang's changes, Jim's Named Fork support,
- *		Peter's EA changes, and XILog additions
+ *	Updated license to APSL 2.0, 2004/7/27 - Jordan Hubbard
  *
- *	Various features/enhancements from Mike Mackovitch -- macko@apple.com
- *  
- *	Added no-cached r/w option May 2008 -- rtucker@apple.com, bsuinn@apple.com 
- *
- * Compile with:
- 	cc -Wall -O3 fsx.c -o fsx
- 	gcc -arch ppc -arch i386 -arch ppc64 -arch x86_64 -Wall -O3 fsx.c -o fsx -DXILOG -F/AppleInternal/Library/Frameworks -framework XILog
+ * $FreeBSD$
  *
  */
 
-#include <sys/xattr.h>
-#include <getopt.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <time.h>
-#include <sys/paths.h>
-#include <sys/param.h>
 #ifdef _UWIN
+# include <sys/param.h>
 # include <limits.h>
+# include <time.h>
 # include <strings.h>
 #endif
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/extattr.h>
+#include <sys/param.h>
 #ifndef MAP_FILE
 # define MAP_FILE 0
 #endif
@@ -72,24 +63,21 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <errno.h>
-#include <libgen.h>
-#ifdef XILOG
-# include <XILog/XILog.h>
-#endif
+
+#define NUMPRINTCOLUMNS 32	/* # columns of data to print on each line */
 
 /*
  *	A log entry is an operation and a bunch of arguments.
  */
 
 struct log_entry {
-	int	opnum;
 	int	operation;
 	int	args[3];
 };
 
-#define	DEFAULT_LOGSIZE	1024
+#define	LOGSIZE	1000
 
-struct log_entry	*oplog;		/* the log */
+struct log_entry	oplog[LOGSIZE];	/* the log */
 int			logptr = 0;	/* current position in log */
 int			logcount = 0;	/* total ops */
 
@@ -104,18 +92,20 @@ int			logcount = 0;	/* total ops */
 #define OP_MAPREAD	5
 #define OP_MAPWRITE	6
 #define OP_SKIPPED	7
-#define OP_NOCACHEREAD	8
-#define OP_NOCACHEWRITE 9
+#define OP_INVALIDATE	8
 
 int page_size;
 int page_mask;
 
+char	*original_buf;			/* a pointer to the original data */
 char	*good_buf;			/* a pointer to the correct data */
 char	*temp_buf;			/* a pointer to the current data */
-char	fname[MAXPATHLEN];		/* name of our test file */
+char	*fname;				/* name of our test file */
 int	fd;				/* fd for our test file */
+int	ea = 0;				/* -e flag */
 int	ea_lastwrite = 0;		/* Size of the last EA Write */
-char    *eaname;                        /* Name of the EA key */
+char	eaname[MAXPATHLEN];		/* Name of the EA key */
+int	eanamespace = EXTATTR_NAMESPACE_USER;
 
 off_t		file_size = 0;
 off_t		biggest = 0;
@@ -124,9 +114,9 @@ unsigned long	testcalls = 0;		/* calls to function "test" */
 
 unsigned long	simulatedopcount = 0;	/* -b flag */
 int	closeprob = 0;			/* -c flag */
-int	debug = 0;			/* -v flag */
+int	invlprob = 0;			/* -i flag */
+int	debug = 0;			/* -d flag */
 unsigned long	debugstart = 0;		/* -D flag */
-int	ea = 0;                         /* -e flag */
 unsigned long	maxfilelen = 256 * 1024;	/* -l flag */
 int	sizechecks = 1;			/* -n flag disables them */
 int	maxoplen = 64 * 1024;		/* -o flag */
@@ -141,106 +131,19 @@ long	monitorend = -1;		/* -m flag */
 int	lite = 0;			/* -L flag */
 long	numops = -1;			/* -N flag */
 int	randomoplen = 1;		/* -O flag disables it */
-int	seed = 0;			/* -S flag */
+int	seed = 1;			/* -S flag */
 int     mapped_writes = 1;	      /* -W flag disables */
 int 	mapped_reads = 1;		/* -R flag disables it */
-int	logsize = DEFAULT_LOGSIZE;	/* -G flag */
-int	datasize = 4;			/* -T flag */
-int	modsize = 0;
-int	fsxgoodfd = -1;
+int     mapped_msync = 1;	      /* -U flag disables */
+int	fsxgoodfd = 0;
 FILE *	fsxlogf = NULL;
 int badoff = -1;
 int closeopen = 0;
-int sync_before_close = 0; /* -y flag enables it */
-int interactive = 0; /* -i flag interactive */
-int interactiveSince = -1; /* -I flag when to start interactive */
-int usehole = 1; // by default use hole (sparse file)
-int slow_motion = 0;
-long	duration = 0;	/* -d flag */
-unsigned int pinginterval = 10000; // About every 30sec?
-#ifdef XILOG
-XILogRef xilogref;
-#endif
-int	gUseRandomNoCache = 0; /* -C randomly mix cached and un-cached r/w ops */
-
-char *msgbuf;
-int msgbuflen;
-
-void dotruncate(unsigned size);
-void writefileimage(void);
-
-#define get_data_at(cp) \
-	(((*(((unsigned char *)(cp)) + 0)) << 0) | \
-	 ((datasize < 2) ? 0 : \
-	  ((*(((unsigned char *)(cp)) + 1)) << 8)) | \
-	 ((datasize < 4) ? 0 : \
-	  (((*(((unsigned char *)(cp)) + 2)) << 16) | \
-	   ((*(((unsigned char *)(cp)) + 3)) << 24))))
-
-#define set_data_at(cp, val) \
-	do { \
-	(*(((unsigned char *)(cp)) + 0)) = ((val) >> 0) & 0xff; \
-	if (datasize < 2) break; \
-	(*(((unsigned char *)(cp)) + 1)) = (((val) >> 8) & 0xff); \
-	if (datasize < 4) break; \
-	(*(((unsigned char *)(cp)) + 2)) = (((val) >> 16) & 0xff); \
-	(*(((unsigned char *)(cp)) + 3)) = (((val) >> 24) & 0xff); \
-	} while (0)
-
-#define SHOWLOGENTRY(OPSTART, OPEND) \
-	(!quiet && \
-	 ((progressinterval && (testcalls % progressinterval == 0)) || \
-          (debug && \
-	   ((monitorstart == -1) || \
-	    (((OPEND) > monitorstart) && \
-	     ((monitorend == -1) || ((OPSTART) <= monitorend)))))))
-
-void docloseopen(void);
-
-int parsetime(char *t)
-{
-	int i = 0;
-	int secs = 0;
-	char b[128]; bzero(b, 128);
-
-	for (i=0; i < strlen(t); i++) {
-		switch (t[i]) {
-			case 's':
-				secs += atoi(b);
-				bzero(b, 128);
-				break;
-			case 'm':
-				secs += atoi(b) * 60;
-				bzero(b, 128);
-				break;
-			case 'h':
-				secs += atoi(b) * 60 * 60;
-				bzero(b, 128);
-				break;
-			case 'd':
-				secs += atoi(b) * 60 * 60 * 24;
-				bzero(b, 128);
-				break;
-			case 'w':
-				secs += atoi(b) * 60 * 60 * 24 * 7;
-				bzero(b, 128);
-				break;
-			case 'y':
-				secs += atoi(b) * 60 * 60 * 24 * 365;
-				bzero(b, 128);
-				break;
-			default:
-				sprintf(b, "%s%c", b, t[i]);
-		}
-	}
-	if (secs == 0) // maybe they just gave us a number?
-		secs = atoi(t);
-	return(secs);
-}
+int invl = 0;
 
 
 void
-mvwarnc(code, fmt, ap)
+vwarnc(code, fmt, ap)
 	int code;
 	const char *fmt;
 	va_list ap;
@@ -255,17 +158,11 @@ mvwarnc(code, fmt, ap)
 
 
 void
-mwarn(const char * fmt, ...)
+warn(const char * fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
-#ifdef XILOG
-	XILogMsg(fmt, ap);
-	XILogMsg("%s", strerror(errno));
-	va_end(ap);
-	va_start(ap, fmt);
-#endif
-	mvwarnc(errno, fmt, ap);
+	vwarnc(errno, fmt, ap);
 	va_end(ap);
 }
 
@@ -276,264 +173,143 @@ prt(char *fmt, ...)
 	va_list args;
 
 	va_start(args, fmt);
-#ifdef XILOG
-	XILogMsg(fmt, args);
-	va_end(args);
-	va_start(args, fmt);
-#endif
-	vfprintf(stdout, fmt, args);
-	fflush(stdout);
-	va_end(args);
-	if (fsxlogf) {
-		va_start(args, fmt);
-		vfprintf(fsxlogf, fmt, args);
-		fflush(fsxlogf);
-		va_end(args);
-	}
-	fflush(stdout);
-}
-
-void
-prt2(char *fmt, ...)
-{
-	va_list args;
-
-	va_start(args, fmt);
 	vfprintf(stdout, fmt, args);
 	va_end(args);
+
 	if (fsxlogf) {
 		va_start(args, fmt);
 		vfprintf(fsxlogf, fmt, args);
 		va_end(args);
 	}
-	fflush(stdout);
 }
-
 
 void
 prterr(char *prefix)
 {
-#ifdef XILOG
-	XILogErr("%s%s%s", prefix, prefix ? ": " : "", strerror(errno));
-#endif
-	prt2("%s%s%s\n", prefix, prefix ? ": " : "", strerror(errno));
+	prt("%s%s%s\n", prefix, prefix ? ": " : "", strerror(errno));
 }
 
 
-int
-log4(int operation, int arg0, int arg1, int arg2)
+void
+do_log4(int operation, int arg0, int arg1, int arg2)
 {
-	int logent = logptr;
-	struct log_entry *le = &oplog[logent];
-	le->opnum = logcount + 1;
+	struct log_entry *le;
+
+	le = &oplog[logptr];
 	le->operation = operation;
-	if (closeopen)
-		le->operation = ~ le->operation;
 	le->args[0] = arg0;
 	le->args[1] = arg1;
 	le->args[2] = arg2;
 	logptr++;
 	logcount++;
-	if (msgbuflen) {
-		snprintf(msgbuf, msgbuflen+1, "%d", logcount);
-	}
-	if (logptr >= logsize)
+	if (logptr >= LOGSIZE)
 		logptr = 0;
-	return logent;
 }
 
 
 void
-offset_last_mod(int offset, int *write, int *tdown, int *tup)
+log4(int operation, int arg0, int arg1, int arg2)
 {
-	int	i, count, down, opnum, operation;
-	struct log_entry	*lp;
-
-	*write = *tdown = *tup = -1;
-
-	opnum = logcount;
-	i = logptr - 1;
-	if (i < 0)
-		i = logsize - 1;
-	if (logcount < logsize) {
-		count = logcount;
-	} else {
-		count = logsize;
-	}
-	for ( ; count > 0; count--, opnum--) {
-		lp = &oplog[i];
-		operation = lp->operation;
-		if ((closeopen = operation < 0))
-			operation = ~ operation;
-		switch (operation) {
-		case OP_MAPWRITE:
-		case OP_WRITE:
-			if (*write != -1)
-				break;
-			if ((offset >= lp->args[0]) && (offset < (lp->args[0] + lp->args[1])))
-				*write = opnum;
-			break;
-		case OP_TRUNCATE:
-			down = lp->args[0] < lp->args[1];
-			if ((offset >= lp->args[!down]) && (offset < lp->args[!!down])) {
-				if (down && (*tdown == -1))
-					*tdown = opnum;
-				else if (!down && (*tup == -1))
-					*tup = opnum;
-			}
-			break;
-		}
-		if ((*write != -1) && (*tdown != -1) && (*tup != -1))
-			return;
-		i--;
-		if (i < 0)
-			i = logsize - 1;
-	}
-}
-
-void
-logentrydump(int logent, int opnum)
-{
-	struct log_entry *lp = &oplog[logent];
-	int down;
-
-	if (modsize)
-		prt("%d(%d): ", opnum, opnum%modsize);
-	else
-		prt("%d: ", opnum);
-	if ((closeopen = lp->operation < 0))
-		lp->operation = ~ lp->operation;
-		
-	switch (lp->operation) {
-	case OP_MAPREAD:
-		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "MAPREAD",
-		    lp->args[0], lp->args[0],
-		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
-		    lp->args[1], lp->args[1]);
-		if ((badoff >= lp->args[0]) && (badoff < lp->args[0] + lp->args[1]))
-		{
-			prt("\t***RRRR***");
-		}
-		break;
-	case OP_MAPWRITE:
-		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "MAPWRITE",
-		    lp->args[0], lp->args[0],
-		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
-		    lp->args[1], lp->args[1]);
-		if ((badoff >= lp->args[0]) && (badoff < lp->args[0] + lp->args[1]))
-		{
-			prt("\t******WWWW");
-		}
-		break;
-	case OP_READ:
-		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "READ",
-		    lp->args[0], lp->args[0],
-		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
-		    lp->args[1], lp->args[1]);
-		if (badoff >= lp->args[0] &&
-		    badoff < lp->args[0] + lp->args[1])
-		{
-			prt("\t***RRRR***");
-		}
-		break;
-	case OP_WRITE:
-		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "WRITE",
-		    lp->args[0], lp->args[0],
-		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
-		    lp->args[1], lp->args[1]);
-		if (lp->args[0] > lp->args[2])
-		{
-			prt(" HOLE");
-		}
-		else if ((lp->args[0] + lp->args[1]) > lp->args[2])
-		{
-			prt(" EXTEND");
-		}
-		if (((badoff >= lp->args[0]) || (badoff >= lp->args[2])) &&
-		    (badoff < (lp->args[0] + lp->args[1])))
-		{
-			prt("\t***WWWW");
-		}
-		break;
-	case OP_NOCACHEREAD:
-		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "NOCACHEREAD",
-		    lp->args[0], lp->args[0],
-		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
-		    lp->args[1], lp->args[1]);
-		if (badoff >= lp->args[0] &&
-		    badoff < lp->args[0] + lp->args[1])
-		{
-			prt("\t***RRRR***");
-		}
-		break;
-	case OP_NOCACHEWRITE:
-		prt("%-15s 0x%x (%d) thru 0x%x (%d)\t(0x%x (%d) bytes)", "NOCACHEWRITE",
-		    lp->args[0], lp->args[0],
-		    lp->args[0] + lp->args[1] - 1, lp->args[0] + lp->args[1] - 1,
-		    lp->args[1], lp->args[1]);
-		if (lp->args[0] > lp->args[2])
-		{
-			prt(" HOLE");
-		}
-		else if ((lp->args[0] + lp->args[1]) > lp->args[2])
-		{
-			prt(" EXTEND");
-		}
-		if (((badoff >= lp->args[0]) || (badoff >= lp->args[2])) &&
-		    (badoff < (lp->args[0] + lp->args[1])))
-		{
-			prt("\t***WWWW");
-		}
-		break;
-	case OP_TRUNCATE:
-		down = lp->args[0] < lp->args[1];
-		prt("%-15s from 0x%x (%d) to 0x%x (%d)",
-		    down ? "TRUNCATE DOWN" : "TRUNCATE UP",
-		    lp->args[1], lp->args[1],
-		    lp->args[0], lp->args[0]);
-		if ((badoff >= lp->args[!down]) &&
-		    (badoff < lp->args[!!down]))
-		{
-			prt("\t******WWWW");
-		}
-		break;
-	case OP_SKIPPED:
-		prt("SKIPPED (no operation)");
-		break;
-	default:
-		prt("BOGUS LOG ENTRY (operation code = %d)!",
-		    lp->operation);
-	}
+	do_log4(operation, arg0, arg1, arg2);
 	if (closeopen)
-	{
-		prt("\n\t\tCLOSE/OPEN");
-	}
-	prt("\n");
+		do_log4(OP_CLOSEOPEN, 0, 0, 0);
+	if (invl)
+		do_log4(OP_INVALIDATE, 0, 0, 0);
 }
 
 
 void
 logdump(void)
 {
-	int	i, count, opnum;
-
-	// don't dump log if we've been logging ops via debug
-	if (debug) return;
+	struct log_entry	*lp;
+	int	i, count, down, opnum;
 
 	prt("LOG DUMP (%d total operations):\n", logcount);
-	if (logcount < logsize) {
+	if (logcount < LOGSIZE) {
 		i = 0;
 		count = logcount;
-		opnum = 1;
 	} else {
 		i = logptr;
-		count = logsize;
-		opnum = 1 + logcount - logsize;
+		count = LOGSIZE;
 	}
-	for ( ; count > 0; count--, opnum++) {
-		logentrydump(i, opnum);
+
+	opnum = i + 1 + (logcount/LOGSIZE)*LOGSIZE;
+	for ( ; count > 0; count--) {
+		lp = &oplog[i];
+
+		if (lp->operation == OP_CLOSEOPEN ||
+		    lp->operation == OP_INVALIDATE) {
+			switch (lp->operation) {
+			case OP_CLOSEOPEN:
+				prt("\t\tCLOSE/OPEN\n");
+				break;
+			case OP_INVALIDATE:
+				prt("\t\tMS_INVALIDATE\n");
+				break;
+			}
+			i++;
+			if (i == LOGSIZE)
+				i = 0;
+			continue;
+		}
+
+		prt("%d(%d mod 256): ", opnum, opnum%256);
+		switch (lp->operation) {
+		case OP_MAPREAD:
+			prt("MAPREAD\t0x%x thru 0x%x\t(0x%x bytes)",
+			    lp->args[0], lp->args[0] + lp->args[1] - 1,
+			    lp->args[1]);
+			if (badoff >= lp->args[0] && badoff <
+						     lp->args[0] + lp->args[1])
+				prt("\t***RRRR***");
+			break;
+		case OP_MAPWRITE:
+			prt("MAPWRITE 0x%x thru 0x%x\t(0x%x bytes)",
+			    lp->args[0], lp->args[0] + lp->args[1] - 1,
+			    lp->args[1]);
+			if (badoff >= lp->args[0] && badoff <
+						     lp->args[0] + lp->args[1])
+				prt("\t******WWWW");
+			break;
+		case OP_READ:
+			prt("READ\t0x%x thru 0x%x\t(0x%x bytes)",
+			    lp->args[0], lp->args[0] + lp->args[1] - 1,
+			    lp->args[1]);
+			if (badoff >= lp->args[0] &&
+			    badoff < lp->args[0] + lp->args[1])
+				prt("\t***RRRR***");
+			break;
+		case OP_WRITE:
+			prt("WRITE\t0x%x thru 0x%x\t(0x%x bytes)",
+			    lp->args[0], lp->args[0] + lp->args[1] - 1,
+			    lp->args[1]);
+			if (lp->args[0] > lp->args[2])
+				prt(" HOLE");
+			else if (lp->args[0] + lp->args[1] > lp->args[2])
+				prt(" EXTEND");
+			if ((badoff >= lp->args[0] || badoff >=lp->args[2]) &&
+			    badoff < lp->args[0] + lp->args[1])
+				prt("\t***WWWW");
+			break;
+		case OP_TRUNCATE:
+			down = lp->args[0] < lp->args[1];
+			prt("TRUNCATE %s\tfrom 0x%x to 0x%x",
+			    down ? "DOWN" : "UP", lp->args[1], lp->args[0]);
+			if (badoff >= lp->args[!down] &&
+			    badoff < lp->args[!!down])
+				prt("\t******WWWW");
+			break;
+		case OP_SKIPPED:
+			prt("SKIPPED (no operation)");
+			break;
+		default:
+			prt("BOGUS LOG ENTRY (operation code = %d)!",
+			    lp->operation);
+		}
+		prt("\n");
+		opnum++;
 		i++;
-		if (i == logsize)
+		if (i == LOGSIZE)
 			i = 0;
 	}
 }
@@ -557,7 +333,7 @@ save_buffer(char *buffer, off_t bufferlength, int fd)
 		if (size_by_seek == (off_t)-1)
 			prterr("save_buffer: lseek eof");
 		else if (bufferlength > size_by_seek) {
-			mwarn("WARNING: save_buffer: .fsxgood file too short... will save 0x%llx bytes instead of 0x%llx\n", (unsigned long long)size_by_seek,
+			warn("save_buffer: .fsxgood file too short... will save 0x%llx bytes instead of 0x%llx\n", (unsigned long long)size_by_seek,
 			     (unsigned long long)bufferlength);
 			bufferlength = size_by_seek;
 		}
@@ -572,7 +348,7 @@ save_buffer(char *buffer, off_t bufferlength, int fd)
 		if (byteswritten == -1)
 			prterr("save_buffer write");
 		else
-			mwarn("WARNING: save_buffer: short write, 0x%x bytes instead of 0x%llx\n",
+			warn("save_buffer: short write, 0x%x bytes instead of 0x%llx\n",
 			     (unsigned)byteswritten,
 			     (unsigned long long)bufferlength);
 	}
@@ -580,9 +356,11 @@ save_buffer(char *buffer, off_t bufferlength, int fd)
 
 
 void
-failure(int status)
+report_failure(int status)
 {
-	if (fsxgoodfd >= 0) {
+	logdump();
+	
+	if (fsxgoodfd) {
 		if (good_buf) {
 			save_buffer(good_buf, file_size, fsxgoodfd);
 			prt("Correct content saved for comparison\n");
@@ -591,63 +369,52 @@ failure(int status)
 		}
 		close(fsxgoodfd);
 	}
-	prt("Seed was set to %d\n", seed);
 	exit(status);
 }
 
 
+#define short_at(cp) ((unsigned short)((*((unsigned char *)(cp)) << 8) | \
+					*(((unsigned char *)(cp)) + 1)))
+
 void
 check_buffers(unsigned offset, unsigned size)
 {
-	unsigned int c, t;
+	unsigned char c, t;
 	unsigned i = 0;
 	unsigned n = 0;
-	unsigned sizeleft = size;
-	unsigned start, good, bad;
-	int op, w, td, tu;
-
-	start = good = bad = 0;
-	op = -1;
+	unsigned op = 0;
+	unsigned bad = 0;
 
 	if (memcmp(good_buf + offset, temp_buf, size) != 0) {
-		prt("data miscompare @ %d\n", offset);
-		while (sizeleft > 0) {
-			c = get_data_at(&good_buf[offset+i]);
-			t = get_data_at(&temp_buf[i]);
+		prt("READ BAD DATA: offset = 0x%x, size = 0x%x\n",
+		    offset, size);
+		prt("OFFSET\tGOOD\tBAD\tRANGE\n");
+		while (size > 0) {
+			c = good_buf[offset];
+			t = temp_buf[i];
 			if (c != t) {
 				if (n == 0) {
-					start = offset + i;
-					good = c;
-					bad = t;
-					op = ((t > 0) && (t <= logcount)) ? t : -1;
+					bad = short_at(&temp_buf[i]);
+					prt("0x%5x\t0x%04x\t0x%04x", offset,
+					    short_at(&good_buf[offset]), bad);
+					op = temp_buf[offset & 1 ? i+1 : i];
 				}
-				n+=datasize;
-				if (badoff < 0) {
-					badoff = offset + i;
-					logdump();
-					prt("data miscompare @ %d\n", offset);
-					prt("%-10s %-10s %-10s %-10s %-8s Last: %-8s %-8s %-8s\n",
-					    "OFFSET", "GOOD", "BAD", "LENGTH", "BADOP#",
-					    "WRITE", "TRUNC-", "TRUNC+");
-				}
+				n++;
+				badoff = offset;
 			}
-			i+=datasize;
-			sizeleft-=datasize;
-			if (n && ((c == t) || (sizeleft <= 0))) {
-				w = td = tu = -1;
-				offset_last_mod(start, &w, &td, &tu);
-				prt("0x%08x 0x%08x 0x%08x 0x%08x %-8d       %-8d %-8d %-8d\n",
-					start, good, bad, n, op, w, td, tu);
-				if (c == t)
-					n = 0;
-			}
+			offset++;
+			i++;
+			size--;
 		}
-		if (badoff == -1) {
-			logdump();
-			prt("transient data miscompare @ %d ????????\n", offset);
-			prt("memcmp(%d,%d) failed but no differences found ????????\n", offset, size);
-		}
-		failure(110);
+		if (n) {
+			prt("\t0x%5x\n", n);
+			if (bad)
+				prt("operation# (mod 256) for the bad data may be %u\n", ((unsigned)op & 0xff));
+			else
+				prt("operation# (mod 256) for the bad data unknown, check HOLE and EXTEND ops\n");
+		} else
+			prt("????????????????\n");
+		report_failure(110);
 	}
 }
 
@@ -664,12 +431,11 @@ check_size(void)
 	}
 	size_by_seek = lseek(fd, (off_t)0, SEEK_END);
 	if (file_size != statbuf.st_size || file_size != size_by_seek) {
-		logdump();
 		prt("Size error: expected 0x%llx stat 0x%llx seek 0x%llx\n",
 		    (unsigned long long)file_size,
 		    (unsigned long long)statbuf.st_size,
 		    (unsigned long long)size_by_seek);
-		failure(120);
+		report_failure(120);
 	}
 }
 
@@ -678,11 +444,8 @@ void
 check_trunc_hack(void)
 {
 	struct stat statbuf;
+
 	ftruncate(fd, (off_t)0);
-
-	if (!usehole)
-		return;
-
 	ftruncate(fd, (off_t)100000);
 	fstat(fd, &statbuf);
 	if (statbuf.st_size != (off_t)100000) {
@@ -698,84 +461,57 @@ doread(unsigned offset, unsigned size)
 {
 	off_t ret;
 	unsigned iret;
-	int logent;
-	int cache_off = 0;
 
 	if (ea)
 		size = ea_lastwrite;
 
 	offset -= offset % readbdy;
-	if (size == 0) {
-		if (debug && testcalls > simulatedopcount)
-		{
+	if (size == 0 && !ea) {
+		if (!quiet && testcalls > simulatedopcount)
 			prt("skipping zero size read\n");
-		}
 		log4(OP_SKIPPED, OP_READ, offset, size);
 		return;
-	}
-	if (size + offset > file_size) {
-		if (debug && testcalls > simulatedopcount)
-		{
-			prt("skipping seek/read past end of file\n");
-		}
-		log4(OP_SKIPPED, OP_READ, offset, size);
-		return;
-	}
-	
-	/* When the gUseRandomNoCache option is enable (-C),
-	 * randomly turn caching off for 30% of the read calls.
-	 * Re-enable caching after the read is complete.
-	 */
-	if (gUseRandomNoCache && ((random() % 100) < 30)) {
-		cache_off = 1;
-		logent = log4(OP_NOCACHEREAD, offset, size, 0);
-	} else {
-		logent = log4(OP_READ, offset, size, 0);
 	}
 
-	if (SHOWLOGENTRY(offset, offset + size))
-	{
-		logentrydump(logent, logcount);
+	if (size + offset > file_size) {
+		if (!quiet && testcalls > simulatedopcount)
+			prt("skipping seek/read past end of file\n");
+		log4(OP_SKIPPED, OP_READ, offset, size);
+		return;
 	}
+
+	log4(OP_READ, offset, size, 0);
 
 	if (testcalls <= simulatedopcount)
 		return;
 
-	if (interactive) {
-		printf("Hit return when ready...");
-		getchar();
-	}
+	if (!quiet && ((progressinterval &&
+			testcalls % progressinterval == 0) ||
+		       (debug &&
+			(monitorstart == -1 ||
+			 (offset + size > monitorstart &&
+			  (monitorend == -1 || offset <= monitorend))))))
+		prt("%lu read\t0x%x thru\t0x%x\t(0x%x bytes)\n", testcalls,
+		    offset, offset + size - 1, size);
 
 	if (!ea) {
 		ret = lseek(fd, (off_t)offset, SEEK_SET);
 		if (ret == (off_t)-1) {
-			logdump();
 			prterr("doread: lseek");
-			failure(140);
-		}
-				
-		if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
-			logdump();
-			prterr("doread: fcntl(F_NOCACHE, 1)");
-			failure(201);
+			report_failure(140);
 		}
 		iret = read(fd, temp_buf, size);
-		if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
-			logdump();
-			prterr("doread: fcntl(F_NOCACHE, 0)");
-			failure(201);
-		}
 	} else {
-		iret = fgetxattr(fd, eaname, temp_buf, size, 0, 0);
+		iret = extattr_get_fd(fd, eanamespace, eaname, temp_buf, size);
 	}
 
 	if (iret != size) {
-		logdump();
 		if (iret == -1)
 			prterr("doread: read");
 		else
-			prt("short read: 0x%x bytes instead of 0x%x\n", iret, size);
-		failure(141);
+			prt("short read: 0x%x bytes instead of 0x%x\n",
+				iret, size);
+		report_failure(141);
 	}
 
 	check_buffers(offset, size);
@@ -801,11 +537,10 @@ check_eofpage(char *s, unsigned offset, char *p, int size)
 	     should_be_zero < last_page + page_size;
 	     should_be_zero++)
 		if (*(char *)should_be_zero) {
-			logdump();
 			prt("Mapped %s: non-zero data past EOF (0x%llx) page offset 0x%x is 0x%04x\n",
 			    s, file_size - 1, should_be_zero & page_mask,
-			    (*(char *)should_be_zero));
-			failure(205);
+			    short_at(should_be_zero));
+			report_failure(205);
 		}
 }
 
@@ -816,61 +551,53 @@ domapread(unsigned offset, unsigned size)
 	unsigned pg_offset;
 	unsigned map_size;
 	char    *p;
-	int logent;
 
 	if (ea)
 		return;
 
 	offset -= offset % readbdy;
 	if (size == 0) {
-		if (debug && testcalls > simulatedopcount)
-		{
+		if (!quiet && testcalls > simulatedopcount)
 			prt("skipping zero size read\n");
-		}
 		log4(OP_SKIPPED, OP_MAPREAD, offset, size);
 		return;
 	}
 	if (size + offset > file_size) {
-		if (debug && testcalls > simulatedopcount)
-		{
+		if (!quiet && testcalls > simulatedopcount)
 			prt("skipping seek/read past end of file\n");
-		}
 		log4(OP_SKIPPED, OP_MAPREAD, offset, size);
 		return;
 	}
 
-	logent = log4(OP_MAPREAD, offset, size, 0);
-
-	if (SHOWLOGENTRY(offset, offset + size))
-	{
-		logentrydump(logent, logcount);
-	}
+	log4(OP_MAPREAD, offset, size, 0);
 
 	if (testcalls <= simulatedopcount)
 		return;
 
+	if (!quiet && ((progressinterval &&
+			testcalls % progressinterval == 0) ||
+		       (debug &&
+			(monitorstart == -1 ||
+			 (offset + size > monitorstart &&
+			  (monitorend == -1 || offset <= monitorend))))))
+		prt("%lu mapread\t0x%x thru\t0x%x\t(0x%x bytes)\n", testcalls,
+		    offset, offset + size - 1, size);
+
 	pg_offset = offset & page_mask;
 	map_size  = pg_offset + size;
 
-	if (interactive) {
-		printf("Hit return when ready...");
-		getchar();
-	}
-
 	if ((p = (char *)mmap(0, map_size, PROT_READ, MAP_FILE | MAP_SHARED, fd,
 			      (off_t)(offset - pg_offset))) == (char *)-1) {
-		logdump();
 		prterr("domapread: mmap");
-		failure(190);
+		report_failure(190);
 	}
 	memcpy(temp_buf, p + pg_offset, size);
 
 	check_eofpage("Read", offset, p, size);
 
 	if (munmap(p, map_size) != 0) {
-		logdump();
 		prterr("domapread: munmap");
-		failure(191);
+		report_failure(191);
 	}
 
 	check_buffers(offset, size);
@@ -878,12 +605,13 @@ domapread(unsigned offset, unsigned size)
 
 
 void
-gendata(char *good_buf, unsigned offset, unsigned size)
+gendata(char *original_buf, char *good_buf, unsigned offset, unsigned size)
 {
-	while (size > 0) {
-		size -= datasize;
-		set_data_at(&good_buf[offset], testcalls);
-		offset += datasize;
+	while (size--) {
+		good_buf[offset] = testcalls % 256; 
+		if (offset % 2)
+			good_buf[offset] += original_buf[offset];
+		offset++;
 	}
 }
 
@@ -893,145 +621,74 @@ dowrite(unsigned offset, unsigned size)
 {
 	off_t ret;
 	unsigned iret;
-	int logent;
-	int	cache_off = 0;
-	
+
 	offset -= offset % writebdy;
-	if (size == 0) {
-		if (debug && testcalls > simulatedopcount)
-		{
+	if (size == 0 && !ea) {
+		if (!quiet && testcalls > simulatedopcount)
 			prt("skipping zero size write\n");
-		}
 		log4(OP_SKIPPED, OP_WRITE, offset, size);
 		return;
 	}
-	
-	/* When the gUseRandomNoCache option is enable (-C),
-	 * randomly turn caching off for 30% of the write calls.
-	 * Re-enable caching after the write is complete.
-	 */
-	if (gUseRandomNoCache && ((random() % 100) < 30)) { // turn data caching off
-		cache_off = 1;
-		logent = log4(OP_NOCACHEWRITE, offset, size, file_size);
-	} else {
-		logent = log4(OP_WRITE, offset, size, file_size);
-	}
 
-	gendata(good_buf, offset, size);
+	log4(OP_WRITE, offset, size, file_size);
 
-	if (SHOWLOGENTRY(offset, offset + size))
-	{
-		logentrydump(logent, logcount);
-	}
-
-	if (file_size < offset + size) {
-		if (SHOWLOGENTRY(offset, offset + size))
-		{
-			prt("extend file size from 0x%x (%d) to 0x%x (%d)\n", (int)file_size, (int)file_size, offset+size, offset+size);
-		}
-
-		if (file_size < offset) {
-			memset(good_buf + file_size, '\0', offset - file_size);
-			if (!usehole) {
-				off_t ret;
-				unsigned iret;
-
-				if (interactive) {
-					printf("Hit return when ready...");
-					getchar();
-				}
-
-				ret = lseek(fd, (off_t)file_size, SEEK_SET);
-				if (ret == (off_t)-1) {
-					logdump();
-					prterr("dowrite: lseek");
-					failure(150);
-				}
-				if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
-					logdump();
-					prterr("dowrite: fcntl(F_NOCACHE, 1)");
-					failure(201);
-				}
-				iret = write(fd, good_buf + file_size, offset - file_size);
-				if (iret != offset - file_size) {
-					logdump();
-					if (iret == -1)
-						prterr("dowrite: write 0s");
-					else
-					{
-						prt("short write: 0x%x bytes instead of 0x%x\n",
-							iret, size);
-					}
-					failure(151);
-				}
-				if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
-					logdump();
-					prterr("dowrite: fcntl(F_NOCACHE, 0)");
-					failure(201);
-				}
+	if (size) {
+		gendata(original_buf, good_buf, offset, size);
+		if (file_size < offset + size) {
+			if (file_size < offset)
+				memset(good_buf + file_size, '\0', offset - file_size);
+			file_size = offset + size;
+			if (lite) {
+				warn("Lite file size bug in fsx!");
+				report_failure(149);
 			}
-		}
-		file_size = offset + size;
-		if (lite) {
-			logdump();
-			mwarn("WARNING: Lite file size bug in fsx!");
-			failure(149);
 		}
 	}
 
 	if (testcalls <= simulatedopcount)
 		return;
 
-	if (interactive) {
-		printf("Hit return when ready...");
-		getchar();
-	}
-
+	if (!quiet && ((progressinterval &&
+			testcalls % progressinterval == 0) ||
+		       (debug &&
+			(monitorstart == -1 ||
+			 (offset + size > monitorstart &&
+			  (monitorend == -1 || offset <= monitorend))))))
+		prt("%lu write\t0x%x thru\t0x%x\t(0x%x bytes)\n", testcalls,
+		    offset, offset + size - 1, size);
+	
 	if (!ea) {
 		ret = lseek(fd, (off_t)offset, SEEK_SET);
 		if (ret == (off_t)-1) {
-			logdump();
 			prterr("dowrite: lseek");
-			failure(150);
-		}
-		if (cache_off && (fcntl(fd, F_NOCACHE, 1) != 0)) { // turn data caching off
-			logdump();
-			prterr("dowrite: fcntl(F_NOCACHE, 1)");
-			failure(201);
+			report_failure(150);
 		}
 		iret = write(fd, good_buf + offset, size);
-		if (iret != size) {
-			logdump();
-			if (iret == -1)
-				prterr("dowrite: write");
-			else
-			{
-				prt("short write: 0x%x bytes instead of 0x%x\n",
-						iret, size);
-			}
-			failure(151);
-		}
-		if (cache_off && (fcntl(fd, F_NOCACHE, 0) != 0)) {
-			logdump();
-			prterr("dowrite: fcntl(F_NOCACHE, 0)");
-			failure(201);
-		}
 	} else {
-		if (random() % 2000 == 0) {
-			iret = fremovexattr(fd, eaname, 0);
+		if (random() % 100 == 0) {
+			iret = extattr_delete_fd(fd, eanamespace, eaname);
 			if (iret != 0) {
 				logdump();
 				prterr("ea_dowrite: removexattr");
-				failure(151);
+				report_failure(151);
 			}
+
+			int i = random() % 64;
+			char* p = (char *)eaname + sprintf(eaname, "%d_", getpid());
+			while(i >= 0)
+				p[i--] = 48 + random() % 10;
 		}
-		iret = fsetxattr(fd, eaname, good_buf, size, 0, 0);
+		iret = extattr_set_fd(fd, eanamespace, eaname, good_buf, size);
 		ea_lastwrite = size;
-		if (iret != 0) {
-			logdump();
-			prterr("ea_dowrite: setxattr");
-			failure(151);
-		}
+	}
+
+	if (iret != size) {
+		if (iret == -1)
+			prterr("dowrite: write");
+		else
+			prt("short write: 0x%x bytes instead of 0x%x\n",
+				iret, size);
+		report_failure(151);
 	}
 }
 
@@ -1041,78 +698,69 @@ domapwrite(unsigned offset, unsigned size)
 {
 	unsigned pg_offset;
 	unsigned map_size;
+	off_t    cur_filesize;
 	char    *p;
-	int logent;
 
 	offset -= offset % writebdy;
 	if (size == 0) {
-		if (debug && testcalls > simulatedopcount)
-		{
+		if (!quiet && testcalls > simulatedopcount)
 			prt("skipping zero size write\n");
-		}
 		log4(OP_SKIPPED, OP_MAPWRITE, offset, size);
 		return;
 	}
+	cur_filesize = file_size;
 
+	log4(OP_MAPWRITE, offset, size, 0);
+
+	gendata(original_buf, good_buf, offset, size);
 	if (file_size < offset + size) {
 		if (file_size < offset)
 			memset(good_buf + file_size, '\0', offset - file_size);
+		file_size = offset + size;
 		if (lite) {
-			logdump();
-			mwarn("WARNING: Lite file size bug in fsx!");
-			failure(200);
+			warn("Lite file size bug in fsx!");
+			report_failure(200);
 		}
-		if (SHOWLOGENTRY(offset, offset + size))
-		{
-			prt("extend file size from 0x%x (%d) to 0x%x (%d)\n", (int)file_size, (int)file_size, offset+size, offset+size);
-		}
-		dotruncate(offset + size);
-		if (closeopen)
-			docloseopen();
-		if (simulatedopcount > 0 && testcalls == simulatedopcount)
-			writefileimage();
-		testcalls++;
-	}
-	gendata(good_buf, offset, size);
-
-	logent = log4(OP_MAPWRITE, offset, size, 0);
-
-	if (SHOWLOGENTRY(offset, offset + size))
-	{
-		logentrydump(logent, logcount);
 	}
 
 	if (testcalls <= simulatedopcount)
 		return;
 
+	if (!quiet && ((progressinterval &&
+			testcalls % progressinterval == 0) ||
+		       (debug &&
+			(monitorstart == -1 ||
+			 (offset + size > monitorstart &&
+			  (monitorend == -1 || offset <= monitorend))))))
+		prt("%lu mapwrite\t0x%x thru\t0x%x\t(0x%x bytes)\n", testcalls,
+		    offset, offset + size - 1, size);
+
+	if (file_size > cur_filesize) {
+		if (ftruncate(fd, file_size) == -1) {
+			prterr("domapwrite: ftruncate");
+			exit(201);
+		}
+	}
 	pg_offset = offset & page_mask;
 	map_size  = pg_offset + size;
 
-	if (interactive) {
-		printf("Hit return when ready...");
-		getchar();
-	}
-
 	if ((p = (char *)mmap(0, map_size, PROT_READ | PROT_WRITE,
 			      MAP_FILE | MAP_SHARED, fd,
-			      (off_t)(offset - pg_offset))) == (char *)-1) {
-		logdump();
+			      (off_t)(offset - pg_offset))) == MAP_FAILED) {
 		prterr("domapwrite: mmap");
-		failure(202);
+		report_failure(202);
 	}
 	memcpy(p + pg_offset, good_buf + offset, size);
-	if (msync(p, map_size, 0) != 0) {
-		logdump();
+	if (mapped_msync && msync(p, map_size, MS_SYNC) != 0) {
 		prterr("domapwrite: msync");
-		failure(203);
+		report_failure(203);
 	}
 
 	check_eofpage("Write", offset, p, size);
 
 	if (munmap(p, map_size) != 0) {
-		logdump();
 		prterr("domapwrite: munmap");
-		failure(204);
+		report_failure(204);
 	}
 }
 
@@ -1120,107 +768,58 @@ domapwrite(unsigned offset, unsigned size)
 void
 dotruncate(unsigned size)
 {
-	off_t oldsize, start, end;
-	int logent;
-
-	oldsize = file_size;
-	if (oldsize < size) {
-		start = oldsize;
-		end = size;
-	} else {
-		start = size;
-		end = oldsize;
-	}
+	int oldsize = file_size;
 
 	size -= size % truncbdy;
 	if (size > biggest) {
 		biggest = size;
 		if (!quiet && testcalls > simulatedopcount)
-		{
 			prt("truncating to largest ever: 0x%x\n", size);
-		}
 	}
 
-	logent = log4(OP_TRUNCATE, size, (unsigned)file_size, 0);
+	log4(OP_TRUNCATE, size, (unsigned)file_size, 0);
 
 	if (size > file_size)
 		memset(good_buf + file_size, '\0', size - file_size);
 	file_size = size;
-	
-	if (SHOWLOGENTRY(start, end))
-	{
-		logentrydump(logent, logcount);
-	}
 
 	if (testcalls <= simulatedopcount)
 		return;
-
-	if (interactive) {
-		printf("Hit return when ready...");
-		getchar();
-	}
-
-	if (usehole || size <= oldsize) { // shrink the file or we want a sparse file
-		if (ftruncate(fd, (off_t)size) == -1) {
-			logdump();
-			prt("ftruncate1: %x\n", size);
-			prterr("dotruncate: ftruncate");
-			failure(160);
-		}
-	} else { // write zeros instead of creating a sparse file to extend the file
-		off_t ret;
-		unsigned iret;
-		ret = lseek(fd, (off_t)oldsize, SEEK_SET);
-		if (ret == (off_t)-1) {
-			logdump();
-			prterr("dowrite: lseek");
-			failure(150);
-		}
-		iret = write(fd, good_buf + oldsize, size - oldsize);
-		if (iret != size - oldsize) {
-			logdump();
-			if (iret == -1)
-				prterr("dotruncate: write");
-			else
-			{
-				prt("short write: 0x%x bytes instead of 0x%x\n",
-					iret, size);
-			}
-			failure(151);
-		}
+	
+	if ((progressinterval && testcalls % progressinterval == 0) ||
+	    (debug && (monitorstart == -1 || monitorend == -1 ||
+		       size <= monitorend)))
+		prt("%lu trunc\tfrom 0x%x to 0x%x\n", testcalls, oldsize, size);
+	if (ftruncate(fd, (off_t)size) == -1) {
+		prt("ftruncate1: %x\n", size);
+		prterr("dotruncate: ftruncate");
+		report_failure(160);
 	}
 }
 
 
 void
-writefileimage(void)
+writefileimage()
 {
 	ssize_t iret;
 
 	if (lseek(fd, (off_t)0, SEEK_SET) == (off_t)-1) {
-		logdump();
 		prterr("writefileimage: lseek");
-		failure(171);
+		report_failure(171);
 	}
 	iret = write(fd, good_buf, file_size);
 	if ((off_t)iret != file_size) {
-		logdump();
 		if (iret == -1)
 			prterr("writefileimage: write");
 		else
-		{
 			prt("short write: 0x%x bytes instead of 0x%llx\n",
 			    iret, (unsigned long long)file_size);
-		}
-		failure(172);
+		report_failure(172);
 	}
-	if (usehole) {
-		if (lite ? 0 : ftruncate(fd, file_size) == -1) {
-			logdump();
-			prt("ftruncate2: %llx\n", (unsigned long long)file_size);
-			prterr("writefileimage: ftruncate");
-			failure(173);
-		}
+	if (lite ? 0 : ftruncate(fd, file_size) == -1) {
+		prt("ftruncate2: %llx\n", (unsigned long long)file_size);
+		prterr("writefileimage: ftruncate");
+		report_failure(173);
 	}
 }
 
@@ -1232,24 +831,45 @@ docloseopen(void)
 		return;
 
 	if (debug)
-	{
 		prt("%lu close/open\n", testcalls);
-	}
-	if (sync_before_close && fsync(fd)) {
-		logdump();
-		prterr("docloseopen: fsync");
-		failure(182);
-	}
 	if (close(fd)) {
-		logdump();
 		prterr("docloseopen: close");
-		failure(180);
+		report_failure(180);
 	}
 	fd = open(fname, O_RDWR, 0);
 	if (fd < 0) {
-		logdump();
 		prterr("docloseopen: open");
-		failure(181);
+		report_failure(181);
+	}
+}
+
+
+void
+doinvl(void)
+{
+	char *p;
+
+	if (file_size == 0)
+		return;
+	if (testcalls <= simulatedopcount)
+		return;
+	if (debug)
+		prt("%lu msync(MS_INVALIDATE)\n", testcalls);
+
+	if ((p = (char *)mmap(0, file_size, PROT_READ | PROT_WRITE,
+			      MAP_FILE | MAP_SHARED, fd, 0)) == MAP_FAILED) {
+		prterr("doinvl: mmap");
+		report_failure(205);
+	}
+
+	if (msync(p, 0, MS_SYNC | MS_INVALIDATE) != 0) {
+		prterr("doinvl: msync");
+		report_failure(206);
+	}
+
+	if (munmap(p, file_size) != 0) {
+		prterr("doinvl: munmap");
+		report_failure(207);
 	}
 }
 
@@ -1274,14 +894,14 @@ test(void)
 
 	if (closeprob)
 		closeopen = (rv >> 3) < (1 << 28) / closeprob;
+	if (invlprob)
+		invl = (rv >> 3) < (1 << 28) / invlprob;
 
 	if (debugstart > 0 && testcalls >= debugstart)
 		debug = 1;
 
 	if (!quiet && testcalls < simulatedopcount && testcalls % 100000 == 0)
-	{
 		prt("%lu...\n", testcalls);
-	}
 
 	/*
 	 * READ:	op = 0
@@ -1290,17 +910,19 @@ test(void)
 	 * TRUNCATE:	op = 3
 	 * MAPWRITE:    op = 3 or 4
 	 */
-	if (lite ? 0 : op == 3 && style == 0 && ea == 0) /* vanilla truncate? */
-		dotruncate(((random() + datasize - 1) & ~(datasize - 1)) % maxfilelen);
+	if (lite ? 0 : op == 3 && style == 0  && ea == 0) /* vanilla truncate? */
+		dotruncate(random() % maxfilelen);
 	else {
-		if (randomoplen)
+		if (randomoplen) {
 			size = random() % (maxoplen+1);
-		size = (size + datasize - 1) & ~(datasize - 1); // round up to multiple of datasize
+			if (ea && (random() % 100) == 0)
+				size = 0;
+		}
+
 		if (lite ? 0 : op == 3 && ea == 0)
 			dotruncate(size);
 		else {
 			offset = random();
-			offset &= ~(datasize - 1); // trunc to multiple of datasize
 			if (op == 1 || op == (lite ? 3 : 4)) {
 				offset %= maxfilelen;
 				if (ea != 0)
@@ -1312,16 +934,12 @@ test(void)
 				else
 					dowrite(offset, size);
 			} else {
-				if (ea || !file_size) {
+				if (ea || !file_size)
 					offset = 0;
-				} else {
+				else 
 					offset %= file_size;
-					offset &= ~(datasize - 1);
-				}
-				if (offset + size > file_size) {
+				if (offset + size > file_size)
 					size = file_size - offset;
-					size &= ~(datasize - 1); // trunc to multiple of datasize
-				}
 				if (op != 0)
 					domapread(offset, size);
 				else
@@ -1331,6 +949,8 @@ test(void)
 	}
 	if (sizechecks && testcalls > simulatedopcount)
 		check_size();
+	if (invl)
+		doinvl();
 	if (closeopen)
 		docloseopen();
 }
@@ -1341,15 +961,9 @@ cleanup(sig)
 	int	sig;
 {
 	if (sig)
-	{
 		prt("signal %d\n", sig);
-	}
 	prt("testcalls = %lu\n", testcalls);
-#ifdef XILOG
-	XILogEndTestCase(xilogref, kXILogTestPassOnErrorLevel);
-	XILogCloseLog(xilogref);
-#endif
-	exit(0);
+	exit(sig);
 }
 
 
@@ -1357,16 +971,13 @@ void
 usage(void)
 {
 	fprintf(stdout, "usage: %s",
-		"fsx [-ehinqvxCLMORW] [-b opnum] [-c Prob] [-d duration] [-f forkname] [-l logpath] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-F flen] [-G logsize] [-I opnum] [-N numops] [-P dirpath] [-S seed] [-T datasize] fname [xxxxx]\n\
+		"fsx [-dnqLOW] [-b opnum] [-c Prob] [-l flen] [-m start:end] [-o oplen] [-p progressinterval] [-r readbdy] [-s style] [-t truncbdy] [-w writebdy] [-D startingop] [-N numops] [-P dirpath] [-S seed] fname\n\
 	-b opnum: beginning operation number (default 1)\n\
 	-c P: 1 in P chance of file close+open at each op (default infinity)\n\
-	-d duration: number of hours for the tool to run\n\
-	-e: tests using an extended attribute rather than a file\n\
-        -f forkname: test the named fork of fname\n\
-	-g logpath: path for .fsxlog file\n\
-	-h: write 0s instead of creating holes (i.e. sparse file)\n\
-	-i: interactive mode, hit return before performing the current operation\n\
-	-l logpath: path for XILog file\n\
+	-d: debug output for all operations\n\
+	-e: maxealen: tests using an extended attribute rather than a file\n\
+	-i P: 1 in P chance of calling msync(MS_INVALIDATE) (default infinity)\n\
+	-l flen: the upper bound on file size (default 262144)\n\
 	-m startop:endop: monitor (print debug output) specified byte range (default 0:infinity)\n\
 	-n: no verifications of file size\n\
 	-o oplen: the upper bound on operation size (default 65536)\n\
@@ -1375,26 +986,17 @@ usage(void)
 	-r readbdy: 4096 would make reads page aligned (default 1)\n\
 	-s style: 1 gives smaller truncates (default 0)\n\
 	-t truncbdy: 4096 would make truncates page aligned (default 1)\n\
-	-v: debug output for all operations\n\
 	-w writebdy: 4096 would make writes page aligned (default 1)\n\
-	-x: write output in XML (XILOG)\n\
-	-y: call fsync before closing the file\n\
-	-C mix cached and un-cached read/write ops\n\
 	-D startingop: debug output starting at specified operation\n\
-	-G logsize: #entries in oplog (default 1024)\n\
-	-F flen: the upper bound on file size (default 262144)\n\
-	-I: start interactive mode since operation opnum\n\
 	-L: fsxLite - no file creations & no file size changes\n\
-	-M: slow motion mode, wait 1 second before each op\n\
 	-N numops: total # operations to do (default infinity)\n\
 	-O: use oplen (see -o flag) for every op (default random)\n\
 	-P dirpath: save .fsxlog and .fsxgood files in dirpath (default ./)\n\
-	-R: mapped read operations DISabled\n\
-	-S seed: for random # generator (default 0, gets timestamp+pid)\n\
-	-T datasize: size of atomic data elements written to file [1,2,4] (default 4)\n\
+	-S seed: for random # generator (default 1) 0 gets timestamp\n\
 	-W: mapped write operations DISabled\n\
-	fname: this filename is REQUIRED (no default)\n\
-	xxxxx: will be overwritten with operation #s, viewable in \"ps\"\n");
+	-R: mapped read operations DISabled)\n\
+	-U: msync after mapped write operations DISabled\n\
+	fname: this filename is REQUIRED (no default)\n");
 	exit(90);
 }
 
@@ -1436,26 +1038,23 @@ getnum(char *s, char **e)
 int
 main(int argc, char **argv)
 {
-	int	ch;
-	char	*endp, **oargv = argv;
-	char goodfile[MAXPATHLEN]; bzero(goodfile, MAXPATHLEN);
-	char logfile[MAXPATHLEN]; bzero(logfile, MAXPATHLEN);
-	char forkname[MAXPATHLEN]; bzero(forkname, MAXPATHLEN);
-	char* logpath = NULL;
-	eaname = argv[0];
-	int xml = 0;
+	int	i, ch;
+	char	*endp;
+	char goodfile[1024];
+	char logfile[1024];
+
+	sprintf(eaname, "%d_%s", getpid(), argv[0]);
 
 	goodfile[0] = 0;
 	logfile[0] = 0;
-	forkname[0] = 0;
 
 	page_size = getpagesize();
 	page_mask = page_size - 1;
 
 	setvbuf(stdout, (char *)0, _IOLBF, 0); /* line buffered stdout */
 
-	while ((ch = getopt_long(argc, argv, "b:c:d:ef:g:hil:m:no:p:qr:s:t:vw:xCD:F:G:I:LMN:OP:RS:T:W", NULL, NULL))
-	       != EOF)
+	while ((ch = getopt(argc, argv,
+	    "b:c:de:i:l:m:no:p:qr:s:t:w:D:LN:OP:RS:UW")) != -1)
 		switch (ch) {
 		case 'b':
 			simulatedopcount = getnum(optarg, &endp);
@@ -1469,15 +1068,14 @@ main(int argc, char **argv)
 		case 'c':
 			closeprob = getnum(optarg, &endp);
 			if (!quiet)
-				fprintf(stdout, "Chance of close/open is 1 in %d\n", closeprob);
+				fprintf(stdout,
+					"Chance of close/open is 1 in %d\n",
+					closeprob);
 			if (closeprob <= 0)
 				usage();
 			break;
 		case 'd':
-			duration = parsetime(optarg);
-			if(duration <= 0)
-				duration = 0;
-			printf("Running for %ld seconds\n", duration);
+			debug = 1;
 			break;
 		case 'e':
 			ea = 1;
@@ -1485,30 +1083,23 @@ main(int argc, char **argv)
 			mapped_reads = 0;
 			sizechecks = 0;
 			closeopen = 0;
-			maxoplen = 3802;
-			maxoplen &= ~(datasize - 1); // round down to multiple of datasize
-			maxfilelen = 3802;
-			maxfilelen &= ~(datasize - 1); // round down to multiple of datasize
-			printf("Writing into extended attribute\n");
-			break;
-		case 'f':
-			if (strlcpy(forkname, optarg, sizeof(forkname)) >= sizeof(forkname))
-				usage();
-			break;
-		case 'g':
-			if (strlcpy(logfile, optarg, sizeof(logfile)) >= sizeof(logfile))
-				usage();
-			if (strlcat(logfile, "/", sizeof(logfile)) >= sizeof(logfile))
-				usage();
-			break;
-		case 'h':
-			usehole = 0;
+			maxoplen = getnum(optarg, &endp);
+			maxfilelen = maxoplen;
+			printf("Writing into extended attribute maxoplen = %d\n", maxoplen);
 			break;
 		case 'i':
-			interactive = 1;
+			invlprob = getnum(optarg, &endp);
+			if (!quiet)
+				fprintf(stdout,
+					"Chance of MS_INVALIDATE is 1 in %d\n",
+					invlprob);
+			if (invlprob <= 0)
+				usage();
 			break;
 		case 'l':
-			logpath = optarg;
+			maxfilelen = getnum(optarg, &endp);
+			if (maxfilelen <= 0)
+				usage();
 			break;
 		case 'm':
 			monitorstart = getnum(optarg, &endp);
@@ -1553,46 +1144,18 @@ main(int argc, char **argv)
 			if (truncbdy <= 0)
 				usage();
 			break;
-		case 'v':
-			debug = 1;
-			break;
 		case 'w':
 			writebdy = getnum(optarg, &endp);
 			if (writebdy <= 0)
 				usage();
-			break;
-		case 'x':
-			xml = 1;
-			break;
-		case 'y':
-			sync_before_close = 1;
-			break;
-		case 'C':
-			gUseRandomNoCache = 1;
 			break;
 		case 'D':
 			debugstart = getnum(optarg, &endp);
 			if (debugstart < 1)
 				usage();
 			break;
-		case 'F':
-			maxfilelen = getnum(optarg, &endp);
-			if (maxfilelen <= 0)
-				usage();
-			break;
-		case 'I':
-			interactiveSince = getnum(optarg, &endp);
-			break;
-		case 'G':
-			logsize = getnum(optarg, &endp);
-			if (logsize < 0)
-				usage();
-			break;
 		case 'L':
 			lite = 1;
-			break;
-		case 'M':
-			slow_motion = 1;
 			break;
 		case 'N':
 			numops = getnum(optarg, &endp);
@@ -1603,26 +1166,21 @@ main(int argc, char **argv)
 			randomoplen = 0;
 			break;
 		case 'P':
-			if (strlcpy(goodfile, optarg, sizeof(goodfile)) >= sizeof(goodfile))
-				usage();
-			if (strlcat(goodfile, "/", sizeof(goodfile)) >= sizeof(goodfile))
-				usage();
-			if (strlcpy(logfile, optarg, sizeof(logfile)) >= sizeof(logfile))
-				usage();
-			if (strlcat(logfile, "/", sizeof(logfile)) >= sizeof(logfile))
-				usage();
+			strncpy(goodfile, optarg, sizeof(goodfile));
+			strcat(goodfile, "/");
+			strncpy(logfile, optarg, sizeof(logfile));
+			strcat(logfile, "/");
 			break;
 		case 'R':
 			mapped_reads = 0;
 			break;
 		case 'S':
 			seed = getnum(optarg, &endp);
+			if (seed == 0)
+				seed = time(0) % 10000;
+			if (!quiet)
+				fprintf(stdout, "Seed set to %d\n", seed);
 			if (seed < 0)
-				usage();
-			break;
-		case 'T':
-			datasize = getnum(optarg, &endp);
-			if ((datasize != 1) && (datasize != 2) && (datasize != 4))
 				usage();
 			break;
 		case 'W':
@@ -1630,41 +1188,21 @@ main(int argc, char **argv)
 			if (!quiet)
 				fprintf(stdout, "mapped writes DISABLED\n");
 			break;
+		case 'U':
+			mapped_msync = 0;
+			if (!quiet)
+				fprintf(stdout, "mapped msync DISABLED\n");
+			break;
 
 		default:
 			usage();
 			/* NOTREACHED */
 		}
-
-	/* for (i = optind; i < argc; i++)
-		fname = argv[i]; */
-
-	fname[0] = 0;
 	argc -= optind;
 	argv += optind;
-	if (argc != 1 && argc != 2)
+	if (argc != 1)
 		usage();
-	if (strlcpy(fname, argv[0], sizeof(fname)) >= sizeof(fname))
-		usage();
-
-	if (argc == 2) {
-		for (msgbuf = argv[1]; *msgbuf; msgbuf++)
-			*msgbuf = ' ';
-		msgbuflen = msgbuf - argv[1];
-		msgbuf = argv[1];
-	}
-
-	if (fname[0]) {
-		if (!quiet) {
-			printf("Using file %s\n", fname);
-		}
-	} else {
-		usage();
-	}
-
-	modsize = (datasize == 4) ? 0 : (datasize == 2) ? 1<<16 : 1<<8;
-	maxfilelen = (maxfilelen + datasize - 1) & ~(datasize - 1); // round up to multiple of datasize
-	maxoplen = (maxoplen + datasize - 1) & ~(datasize - 1); // round up to multiple of datasize
+	fname = argv[0];
 
 	signal(SIGHUP,	cleanup);
 	signal(SIGINT,	cleanup);
@@ -1677,56 +1215,6 @@ main(int argc, char **argv)
 	signal(SIGUSR1,	cleanup);
 	signal(SIGUSR2,	cleanup);
 
-	// Open the log for writing
-#ifdef XILOG
-	xilogref = XILogOpenLogExtended(logpath, "fsx", "com.apple.xintegration", NULL, xml, 0, NULL,"ResultOwner","com.apple.fsx",NULL);
-	if(xilogref == NULL) {
-		fprintf(stderr, "Couldn't create log for path: %s\n", logpath);
-		exit(-1);
-	}
-
-	XILogBeginTestCase(xilogref,"Begin Tests", "Read/Write/MapRead/Truncate/MapWrite Tests");
-#endif
-
-	/*
-	 * create goodfile and logfile names from fname before potentially adding
-	 * a fork name to fname
-	 */
-	if (strlcat(goodfile, fname, sizeof(goodfile)) >= sizeof(goodfile))
-		usage();
-	if (strlcat(goodfile, ".fsxgood", sizeof(goodfile)) >= sizeof(goodfile))
-		usage();
-	if (strlcat(logfile, fname, sizeof(logfile)) >= sizeof(logfile))
-		usage();
-	if (strlcat(logfile, ".fsxlog", sizeof(logfile)) >= sizeof(logfile))
-		usage();
-	/*
-	 * add forkname to fname if forkname was supplied
-	 */
-	if (forkname[0] != 0) {
-		/* make sure fname exists if working with a named fork */
-		fd = open(fname, O_RDWR|(lite ? 0 : O_CREAT), 0666);
-		if (fd < 0) {
-			prterr(fname);
-			exit(91);
-		} else {
-			/* don't need it open */
-			close(fd);
-		}
-		if (strlcat(fname, _PATH_FORKSPECIFIER, sizeof(fname)) >= sizeof(fname))
-			usage();
-		if (strlcat(fname, forkname, sizeof(fname)) >= sizeof(fname))
-			usage();
-	}
-
-	oplog = (struct log_entry *) malloc(logsize * sizeof(struct log_entry));
-	if (!oplog) {
-		prt("unable to allocate %d entry log", logsize);
-		exit(99);
-	}
-
-	if (seed == 0)
-		seed = (time(NULL) + getpid()) | 1;
 	initstate(seed, state, 256);
 	setstate(state);
 	fd = open(fname, O_RDWR|(lite ? 0 : O_CREAT|O_TRUNC), 0666);
@@ -1734,114 +1222,72 @@ main(int argc, char **argv)
 		prterr(fname);
 		exit(91);
 	}
+
+	if(ea)
+		extattr_set_fd(fd, 1, eaname, NULL, 0);
+
+	strncat(goodfile, fname, 256);
+	strcat (goodfile, ".fsxgood");
 	fsxgoodfd = open(goodfile, O_RDWR|O_CREAT|O_TRUNC, 0666);
 	if (fsxgoodfd < 0) {
 		prterr(goodfile);
 		exit(92);
 	}
+	strncat(logfile, fname, 256);
+	strcat (logfile, ".fsxlog");
 	fsxlogf = fopen(logfile, "w");
 	if (fsxlogf == NULL) {
 		prterr(logfile);
 		exit(93);
 	}
-	if (!quiet) {
-		prt("command line:");
-		while (*oargv)
-			prt(" %s", *oargv++);
-		prt("\n");
-	}
-	prt("Seed set to %d\n", seed);
 	if (lite) {
 		off_t ret;
 		file_size = maxfilelen = lseek(fd, (off_t)0, SEEK_END);
 		if (file_size == (off_t)-1) {
 			prterr(fname);
-			mwarn("WARNING: main: lseek eof");
+			warn("main: lseek eof");
 			exit(94);
 		}
 		ret = lseek(fd, (off_t)0, SEEK_SET);
 		if (ret == (off_t)-1) {
 			prterr(fname);
-			mwarn("WARNING: main: lseek 0");
+			warn("main: lseek 0");
 			exit(95);
 		}
-		maxfilelen &= ~(datasize - 1); // round down to multiple of datasize
 	}
+	original_buf = (char *) malloc(maxfilelen);
+	for (i = 0; i < maxfilelen; i++)
+		original_buf[i] = random() % 256;
 	good_buf = (char *) malloc(maxfilelen);
 	memset(good_buf, '\0', maxfilelen);
 	temp_buf = (char *) malloc(maxoplen);
 	memset(temp_buf, '\0', maxoplen);
-	if (lite) {	/* zero entire existing file */
+	
+	if (lite & !ea) {	/* zero entire existing file */
 		ssize_t written;
 
 		written = write(fd, good_buf, (size_t)maxfilelen);
 		if (written != maxfilelen) {
 			if (written == -1) {
 				prterr(fname);
-				mwarn("WARNING: main: error on write");
+				warn("main: error on write");
 			} else
-				mwarn("WARNING: main: short write, 0x%x bytes instead of 0x%x\n",
-						(unsigned)written, maxfilelen);
+				warn("main: short write, 0x%x bytes instead of 0x%x\n",
+				     (unsigned)written, maxfilelen);
 			exit(98);
 		}
-	} else 
-		if (!ea) check_trunc_hack();
+	} else if (!ea)
+		check_trunc_hack();
 
-#ifdef XILOG
-	XIPing(0);
-#endif /* XILOG */
 
-	if(duration > 0) // time based cycling
-	{
-		time_t currentTime = time(NULL);
-		struct tm* tmPtr = localtime(&currentTime);
-		tmPtr->tm_sec += duration;
-		time_t stopTime = mktime(tmPtr);
-		while(time(NULL) < stopTime) {
-			if (slow_motion)
-				sleep(2);			/* wait for 1 second */
-			test();
-#ifdef XILOG
-			if((testcalls % pinginterval) == 0)
-				XIPing(testcalls);
-#endif
-		}	
-	}
-	else
-	{
-		while (numops == -1 || numops--) {
-			if (interactiveSince == testcalls) {
-				interactive = 1;
-				debug = 1;
-				quiet = 0;
-			}
-			if (slow_motion)
-				sleep(2);			/* wait for 1 second */
-			test();
-#ifdef XILOG
-			if((testcalls % pinginterval) == 0)
-				XIPing(testcalls);
-#endif
-		}
-	}
+	while (numops == -1 || numops--)
+		test();
 
-	if (sync_before_close && fsync(fd)) {
-		logdump();
-		prterr("docloseopen: fsync");
-		failure(182);
-	}
 	if (close(fd)) {
-		logdump();
 		prterr("close");
-		failure(99);
+		report_failure(99);
 	}
-	if (!quiet)
-		prt("All operations - %lu - completed A-OK!\n", testcalls);
-
-#ifdef XILOG
-	XILogEndTestCase(xilogref, kXILogTestPassOnErrorLevel);
-	XILogCloseLog(xilogref);
-#endif
+	prt("All operations completed A-OK!\n");
 
 	exit(0);
 	return 0;

@@ -22,8 +22,6 @@
 #include "util.h"
 
 extern int trace;
-char *acl_perm_dir_n[] = { "list", "add_file", "search", "delete", "add_subdirectory", "delete_child", "readattr", "writeattr", "readextattr", "writeextattr", "readsecurity", "writesecurity", "chown" };
-int acl_perm_t_dir_r[] = { ACL_LIST_DIRECTORY, ACL_ADD_FILE, ACL_SEARCH, ACL_DELETE, ACL_ADD_SUBDIRECTORY, ACL_DELETE_CHILD, ACL_READ_ATTRIBUTES, ACL_WRITE_ATTRIBUTES, ACL_READ_EXTATTRIBUTES, ACL_WRITE_EXTATTRIBUTES, ACL_READ_SECURITY, ACL_WRITE_SECURITY, ACL_CHANGE_OWNER };
 char errstr[1024];
 
 /* ------------------------------------------------------------------------- */

@@ -27,7 +27,6 @@ This header includes all system headers that are needed.
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
-#include <membership.h>
 #include <pthread.h>
 #include <pwd.h>
 #include <stdarg.h>
@@ -36,6 +35,7 @@ This header includes all system headers that are needed.
 #include <strings.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/uuid.h>
 #include <unistd.h>
 
 #ifdef NeXT

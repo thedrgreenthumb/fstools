@@ -739,12 +739,6 @@ int	main(int argc, char **argv)
 {
 	int			n, i;
 	struct stat sbuf;
-	struct volcapbuf {
-		u_long buffer_size;
-		vol_capabilities_attr_t caps;
-	};
-	struct attrlist alist;
-	struct volcapbuf buf;
 	struct statfs st;
 	int dirs = 0;
 
@@ -866,102 +860,9 @@ int	main(int argc, char **argv)
 
 
 	// Check if soft/hard links & ACLs are supported
-	alist.bitmapcount = 5;
-	alist.reserved = 0;
-	alist.commonattr = 0;
-	alist.volattr = ATTR_VOL_INFO | ATTR_VOL_CAPABILITIES;
-	alist.dirattr = 0;
-	alist.fileattr = 0;
-	alist.forkattr = 0;
-
-	if (statfs(root1, &st) < 0) {
-		perr(errno, "statfs");
-		exit(-1);
-	}
-	if (getattrlist(st.f_mntonname, &alist, &buf, sizeof buf, 0) < 0) {
-		perr(errno, "getattrlist");
-		exit(-1);
-	}
-	printf("Capabilities of %s (on %s): softlinks?", root1, st.f_mntonname);
-	if (buf.caps.capabilities[VOL_CAPABILITIES_FORMAT] & VOL_CAP_FMT_SYMBOLICLINKS) {
-		printf("Y");
-	} else {
-		printf("N");
-		softlinks = 0;
-	}
-
-	printf(" hardlinks?");
-	if (buf.caps.capabilities[VOL_CAPABILITIES_FORMAT] & VOL_CAP_FMT_HARDLINKS) {
-		printf("Y");
-	} else {
-		printf("N");
-		hardlinks = 0;
-	}
-        printf(" ACLs?");
-        if(buf.caps.capabilities[VOL_CAPABILITIES_INTERFACES]&VOL_CAP_INT_EXTENDED_SECURITY){
-                printf("Y");
-        } else {
-                printf("N");
-                acl = 0;
-        }
-	printf("\n");
-
-	if (statfs(root1, &st) < 0) {
-		perr(errno, "statfs");
-		exit(-1);
-	}
-	if (getattrlist(st.f_mntonname, &alist, &buf, sizeof buf, 0) < 0) {
-		perr(errno, "getattrlist");
-		exit(-1);
-	}
-	printf("Capabilities of %s (on %s): softlinks?", root2, st.f_mntonname);
-	if (buf.caps.capabilities[VOL_CAPABILITIES_FORMAT] & VOL_CAP_FMT_SYMBOLICLINKS) {
-		printf("Y");
-	} else {
-		printf("N");
-		softlinks = 0;
-	}
-	printf(" hardlinks?");
-
-	if (buf.caps.capabilities[VOL_CAPABILITIES_FORMAT] & VOL_CAP_FMT_HARDLINKS) {
-		printf("Y");
-	} else {
-		printf("N");
-		hardlinks = 0;
-	}
 	printf(" ACLs?");
-        if(buf.caps.capabilities[VOL_CAPABILITIES_INTERFACES]&VOL_CAP_INT_EXTENDED_SECURITY){
-                printf("Y");
-        } else {
-                printf("N");
-                acl = 0;
-        }
+	acl = 0;
 	printf("\n");
-
-
-
-	if (acl) {
-		// Now, put user "www"'s UUID into the global variable "uuid"
-		char *u = "www";
-		struct passwd *tpass = NULL;
-		//uuid_t *uuid=NULL; // this was defined globally
-		if (NULL == (uuid = (uuid_t *)calloc(1,sizeof(uuid_t))))
-			perr(errno, "unable to allocate a uuid");
-		tpass = getpwnam(u);
-		if (tpass) {
-			if (0 != mbr_uid_to_uuid(tpass->pw_uid, *uuid)) {
-				perr(errno, "mbr_uid_to_uuid(): Unable to translate");
-			}
-		}
-
-		// Next, make our threads
-		pthread_mutex_init(&mutex_start, NULL);
-		pthread_cond_init (&cond_start,  NULL);
-
-		for (i=0;i<THREADS;i++){
-			pthread_create(&thr[i], NULL, thr_start, NULL);
-		}
-	}
 
 #ifdef XILOG
 	char argline[1024]; bzero(argline, 1024);
